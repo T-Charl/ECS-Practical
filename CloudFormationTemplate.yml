@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+################################################################################
+#
+# DESCRIPTION
+#
+##############################################################################
+################################################################################
+#
+# RESOURCES
+#
+##############################################################################
+Resources:
+  rECRRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: hello-server
+  rECRRepoParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: ECR Repository
+      Name: ecr-repo-name
+      Type: String
+      Value: !Ref rECRRepo
+  rTaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        ContainerDefinitions:
+          - Name: hello-server
+            Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/hello-server
+            PortMappings:
+              - ContainerPort: 80
+                HostPort: 80
+                Protocol: tcp
+            Essential: true
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: /ecs/hello-server
+                awslogs-region: eu-west-1
+                awslogs-stream-prefix: ecs
+            Memory: 256
+  rTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: hello-server-tg
+      TargetType: instance
+      HealthCheckIntervalSeconds: 5
+      HealthCheckPath: /ping
+      HealthCheckTimeoutSeconds: 3
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Sub '{{resolve:ssm:vpc}}'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
+  rListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref rTargetGroup
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - "/hello/*"
+      ListenerArn: '{{resolve:ssm:public-lb-listener}}'
+      Priority: 10
+  rCodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /codebuild/hello-server
+
+  rCodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+        Description: Permission to execute AWS CodePipeline
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      Policies:
+        - PolicyName: pipeline-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # - Sid: AllowCodeCommitActions
+              #   Effect: 'Allow'
+              #   Action:
+              #     - 'codecommit:UploadArchive'
+              #     - 'codecommit:GetCommit'
+              #     - 'codecommit:GetBranch'
+              #     - 'codecommit:GitPull'
+              #     - 'codecommit:GetUploadArchiveStatus'
+              #   Resource:
+              #     - !GetAtt rCodeCommitRepository.Arn
+              - Sid: AllowS3Actions
+                Effect: 'Allow'
+                Action:
+                  - 'codecommit:UploadArchive'
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${rS3ArtifactBucket}'
+                  - !Sub 'arn:aws:s3:::${rS3ArtifactBucket}/*'
+              - Sid: AllowCodeBuildActions
+                Effect: 'Allow'
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Resource:
+                  - '*'
+              - Sid: AllowCodeDeployActions
+                Effect: 'Allow'
+                Action:
+                  - 'ecs:*'
+                Resource:
+                  - '*'
+              - Sid: AllowCWLogsActions
+                Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:codebuild/hello-server'
+
+
+
+###############################################################################
+#
+# OUTPUTS
+#
+###############################################################################
+
+Outputs:
+  ECSTaskDefinition:
+    Description: The created Taskdefinition.
+    Value: !Ref rTaskDefinition
